@@ -12,7 +12,7 @@ const MAIL_MESSAGES_TABLE = "mail_messages";
 const MAIL_RECIPIENTS_TABLE = "mail_message_recipients";
 const INLINE_CID_ATTACHMENT_LIMIT_BYTES = 512 * 1024;
 const INLINE_CID_ATTACHMENT_TOTAL_LIMIT_BYTES = 2 * 1024 * 1024;
-const QUERYABLE_MAIL_DOMAIN = "icloud.com";
+const DEFAULT_QUERYABLE_DOMAINS = ["icloud.com", "gmail.com"];
 const JSON_NO_STORE_HEADERS = {
   "cache-control": "no-store",
 };
@@ -102,13 +102,23 @@ function getEmailDomain(value) {
   return atIndex === -1 ? "" : email.slice(atIndex + 1);
 }
 
-function isQueryableIcloudEmail(value) {
-  const email = normalizeEmail(value);
+function getQueryableDomains(env) {
+  const configured = (env && env.QUERYABLE_DOMAINS || "").trim();
 
-  return isValidEmail(email) && getEmailDomain(email) === QUERYABLE_MAIL_DOMAIN;
+  if (configured) {
+    return parseCsv(configured, DEFAULT_QUERYABLE_DOMAINS);
+  }
+
+  return DEFAULT_QUERYABLE_DOMAINS;
 }
 
-function parseQueryableEmailInput(values, { maxCount = MAX_QUERY_EMAILS } = {}) {
+function isQueryableEmail(value, queryableDomains = DEFAULT_QUERYABLE_DOMAINS) {
+  const email = normalizeEmail(value);
+
+  return isValidEmail(email) && queryableDomains.includes(getEmailDomain(email));
+}
+
+function parseQueryableEmailInput(values, { maxCount = MAX_QUERY_EMAILS, queryableDomains = DEFAULT_QUERYABLE_DOMAINS } = {}) {
   const inputs = Array.isArray(values) ? values : [values];
   const emails = [];
   const seen = new Set();
@@ -119,7 +129,7 @@ function parseQueryableEmailInput(values, { maxCount = MAX_QUERY_EMAILS } = {}) 
       const email = normalizeEmail(part);
 
       if (!email) continue;
-      if (!isQueryableIcloudEmail(email)) {
+      if (!isQueryableEmail(email, queryableDomains)) {
         hasInvalid = true;
         continue;
       }
@@ -618,9 +628,10 @@ async function saveMailMessage(env, messageData) {
   const id = crypto.randomUUID();
   const workerId = getWorkerId(env);
   const receivedAt = new Date().toISOString();
+  const queryableDomains = getQueryableDomains(env);
   const recipientEmails = [...new Set((messageData.recipientEmails || []).map(normalizeEmail))]
-    .filter((email) => isQueryableIcloudEmail(email));
-  const primaryToEmail = isQueryableIcloudEmail(messageData.primaryToEmail)
+    .filter((email) => isQueryableEmail(email, queryableDomains));
+  const primaryToEmail = isQueryableEmail(messageData.primaryToEmail, queryableDomains)
     ? normalizeEmail(messageData.primaryToEmail)
     : recipientEmails[0] || "";
 
@@ -791,7 +802,8 @@ function getSearchParamsPreservePlus(url, name) {
 async function listMailMessages(env, { emails = [], cursor } = {}) {
   const db = await ensureMailDbSchema(env);
   const workerId = getWorkerId(env);
-  const emailFilters = parseQueryableEmailInput(emails).emails;
+  const queryableDomains = getQueryableDomains(env);
+  const emailFilters = parseQueryableEmailInput(emails, { queryableDomains }).emails;
   const queriedEmailsSet = new Set(emailFilters);
   const conditions = ["m.worker_id = ?"];
   const params = [workerId];
@@ -854,15 +866,17 @@ async function listMailMessages(env, { emails = [], cursor } = {}) {
   };
 }
 
-function renderMailPage(workerUrl) {
+function renderMailPage(workerUrl, env) {
   const serializedWorkerUrl = serializeScriptValue(workerUrl);
+  const queryableDomains = getQueryableDomains(env);
+  const serializedDomains = serializeScriptValue(queryableDomains);
 
   return `<!doctype html>
 <html lang="vi">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>iCloud Mail</title>
+  <title>Cloud Mail</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;700;900&display=swap">
@@ -1317,8 +1331,8 @@ function renderMailPage(workerUrl) {
   <main class="page">
     <section class="topbar" aria-labelledby="page-title">
       <div class="title-block">
-        <h1 id="page-title">iCloud Mail</h1>
-        <p class="title-note">Tra cứu nhiều alias iCloud trong một lần, làm mới nhanh ngay trên web mà không phải đổi qua từng địa chỉ.</p>
+        <h1 id="page-title">Cloud Mail</h1>
+        <p class="title-note">Tra cứu email iCloud và Gmail trong một lần, làm mới nhanh ngay trên web mà không phải đổi qua từng địa chỉ.</p>
       </div>
       <div class="status" data-auto-status>Tự làm mới: tắt</div>
     </section>
@@ -1327,9 +1341,9 @@ function renderMailPage(workerUrl) {
       <form class="search-form" data-mail-form>
         <div class="search-main">
           <label class="field">
-            <span class="field-label">Email iCloud</span>
-            <textarea data-mail-input name="email" placeholder="farrago.mull-1u@icloud.com&#10;user+tag@icloud.com, another-alias@icloud.com" autocomplete="off" autocapitalize="none" spellcheck="false" required></textarea>
-            <span class="field-note">Nhập nhiều email, mỗi dòng một email hoặc ngăn cách bằng dấu phẩy.</span>
+            <span class="field-label">Email</span>
+            <textarea data-mail-input name="email" placeholder="alias@icloud.com&#10;user@gmail.com, another@icloud.com" autocomplete="off" autocapitalize="none" spellcheck="false" required></textarea>
+            <span class="field-note">Nhập nhiều email (iCloud hoặc Gmail), mỗi dòng một email hoặc ngăn cách bằng dấu phẩy.</span>
           </label>
         </div>
         <div class="field-stack">
@@ -1353,7 +1367,7 @@ function renderMailPage(workerUrl) {
           <strong class="meta-value" data-last-updated>Chưa cập nhật</strong>
         </div>
       </div>
-      <div class="message" data-message>Nhập một hoặc nhiều địa chỉ iCloud để xem mail.</div>
+      <div class="message" data-message>Nhập một hoặc nhiều địa chỉ email (iCloud / Gmail) để xem mail.</div>
     </section>
 
     <section class="messages" data-messages aria-live="polite"></section>
@@ -1368,6 +1382,7 @@ function renderMailPage(workerUrl) {
     const AUTO_REFRESH_MS = ${LOGS_AUTO_REFRESH_MS};
     const AUTO_REFRESH_SECONDS = Math.round(AUTO_REFRESH_MS / 1000);
     const MAX_QUERY_EMAILS = ${MAX_QUERY_EMAILS};
+    const QUERYABLE_DOMAINS = ${serializedDomains};
 
     const form = document.querySelector("[data-mail-form]");
     const input = document.querySelector("[data-mail-input]");
@@ -1431,8 +1446,11 @@ function renderMailPage(workerUrl) {
       }).format(date);
     }
 
-    function isIcloudEmail(value) {
-      return /^[^\\s@]+@icloud\\.com$/i.test((value || "").trim());
+    function isQueryableEmailClient(value) {
+      const email = (value || "").trim().toLowerCase();
+      if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) return false;
+      const domain = email.split("@").pop();
+      return QUERYABLE_DOMAINS.includes(domain);
     }
 
     function parseEmailInput(value) {
@@ -1444,7 +1462,7 @@ function renderMailPage(workerUrl) {
         const email = part.trim().toLowerCase();
 
         if (!email) continue;
-        if (!isIcloudEmail(email)) {
+        if (!isQueryableEmailClient(email)) {
           hasInvalid = true;
           continue;
         }
@@ -1585,12 +1603,12 @@ function renderMailPage(workerUrl) {
       const parsed = parseEmailInput(input.value);
       accessToken = tokenInput.value.trim();
       if (parsed.tooMany) {
-        setMessage("Tối đa " + MAX_QUERY_EMAILS + " email @icloud.com mỗi lần.", "error");
+        setMessage("Tối đa " + MAX_QUERY_EMAILS + " email mỗi lần.", "error");
         input.focus();
         return;
       }
       if (parsed.hasInvalid) {
-        setMessage("Chỉ được tra cứu email @icloud.com.", "error");
+        setMessage("Chỉ hỗ trợ email từ: " + QUERYABLE_DOMAINS.join(", "), "error");
         input.focus();
         return;
       }
@@ -1611,12 +1629,12 @@ function renderMailPage(workerUrl) {
       const parsed = parseEmailInput(input.value);
       accessToken = tokenInput.value.trim();
       if (parsed.tooMany) {
-        setMessage("Tối đa " + MAX_QUERY_EMAILS + " email @icloud.com mỗi lần.", "error");
+        setMessage("Tối đa " + MAX_QUERY_EMAILS + " email mỗi lần.", "error");
         input.focus();
         return;
       }
       if (parsed.hasInvalid) {
-        setMessage("Chỉ được tra cứu email @icloud.com.", "error");
+        setMessage("Chỉ hỗ trợ email từ: " + QUERYABLE_DOMAINS.join(", "), "error");
         input.focus();
         return;
       }
@@ -1692,10 +1710,11 @@ async function handleEmail(message, env) {
     envelopeToEmail,
     parsed.parsedEmail
   );
-  const recipientEmails = detectedRecipientEmails.filter(isQueryableIcloudEmail);
+  const queryableDomains = getQueryableDomains(env);
+  const recipientEmails = detectedRecipientEmails.filter((e) => isQueryableEmail(e, queryableDomains));
   const primaryToEmail =
     recipientEmails[0] ||
-    (isQueryableIcloudEmail(getPrimaryToEmail(message.headers, envelopeToEmail))
+    (isQueryableEmail(getPrimaryToEmail(message.headers, envelopeToEmail), queryableDomains)
       ? getPrimaryToEmail(message.headers, envelopeToEmail)
       : "");
 
@@ -1752,7 +1771,7 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/mail")) {
-      return new Response(renderMailPage(getWorkerUrl(env, url)), {
+      return new Response(renderMailPage(getWorkerUrl(env, url), env), {
         headers: PAGE_SECURITY_HEADERS,
       });
     }
@@ -1766,7 +1785,8 @@ export default {
     }
 
     if (url.pathname === "/logs" || url.pathname === "/messages") {
-      const mailQuery = parseQueryableEmailInput(getSearchParamsPreservePlus(url, "mail"));
+      const queryableDomains = getQueryableDomains(env);
+      const mailQuery = parseQueryableEmailInput(getSearchParamsPreservePlus(url, "mail"), { queryableDomains });
 
       if (request.method === "OPTIONS") {
         return new Response(null, {
@@ -1783,21 +1803,21 @@ export default {
       }
 
       if (mailQuery.tooMany) {
-        return new Response(`Up to ${MAX_QUERY_EMAILS} @icloud.com emails can be queried at once`, {
+        return new Response(`Up to ${MAX_QUERY_EMAILS} emails can be queried at once`, {
           status: 400,
           headers: JSON_NO_STORE_HEADERS,
         });
       }
 
       if (mailQuery.hasInvalid) {
-        return new Response("Only @icloud.com email can be queried", {
+        return new Response(`Only emails from supported domains (${queryableDomains.join(", ")}) can be queried`, {
           status: 400,
           headers: JSON_NO_STORE_HEADERS,
         });
       }
 
       if (mailQuery.emails.length === 0) {
-        return new Response("mail @icloud.com is required", {
+        return new Response("At least one supported email is required", {
           status: 400,
           headers: JSON_NO_STORE_HEADERS,
         });
