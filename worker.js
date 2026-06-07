@@ -12,7 +12,7 @@ const MAIL_MESSAGES_TABLE = "mail_messages";
 const MAIL_RECIPIENTS_TABLE = "mail_message_recipients";
 const INLINE_CID_ATTACHMENT_LIMIT_BYTES = 512 * 1024;
 const INLINE_CID_ATTACHMENT_TOTAL_LIMIT_BYTES = 2 * 1024 * 1024;
-const DEFAULT_QUERYABLE_DOMAINS = ["icloud.com", "gmail.com"];
+const DEFAULT_QUERYABLE_DOMAINS = ["icloud.com", "gmail.com", "google.com"];
 const JSON_NO_STORE_HEADERS = {
   "cache-control": "no-store",
 };
